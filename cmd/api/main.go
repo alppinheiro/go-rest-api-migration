@@ -12,7 +12,6 @@ import (
 )
 
 func main() {
-	// initialize structured logger
 	levelEnv := strings.ToLower(os.Getenv("LOG_LEVEL"))
 	switch levelEnv {
 	case "debug":
