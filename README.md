@@ -81,6 +81,65 @@ make flyway-clean     # limpa schema (CUIDADO: remove objetos do DB)
 
 O `Makefile` usa a imagem oficial `flyway/flyway` e monta o diretório `internal/infrastructure/database/migrations/` para que as SQLs sejam detectadas.
 
+Serviço `migrate` (Flyway) — por que e como é usado
+-----------------
+Onde está definido:
+- Serviço `migrate` em [docker-compose.yml](docker-compose.yml).
+
+O que ele faz:
+- Executa a imagem oficial `flyway/flyway` e monta `internal/infrastructure/database/migrations/` em `/flyway/sql`.
+- Comando padrão usado no Compose:
+	- `-url=jdbc:postgresql://postgres:5432/${POSTGRES_DB} -user=${POSTGRES_USER} -password=${POSTGRES_PASSWORD} -baselineOnMigrate=true migrate`
+- Cada migração aplicada é registrada na tabela `flyway_schema_history` do banco.
+
+Por que usamos este serviço:
+- Mantém a responsabilidade de migração separada do binário da aplicação, garantindo que o esquema seja aplicado de forma reprodutível antes da API iniciar.
+- Permite auditar e reverter (via histórico) as alterações de esquema e padroniza execução em diferentes ambientes.
+
+Orquestração com `docker compose`:
+- `migrate` depende do serviço `postgres` com healthcheck (`pg_isready`).
+- `api` depende de `migrate` usando `service_completed_successfully`, de forma que o Compose só inicia a API após o Flyway terminar com sucesso.
+
+Como executar manualmente:
+- Via Makefile (recomendado):
+
+```bash
+make flyway-migrate
+```
+
+- Diretamente com `docker compose` (executa um container Flyway que aplica migrações):
+
+```bash
+docker compose run --rm migrate
+```
+
+Comandos úteis para inspecionar o histórico (exemplo genérico):
+
+1) Identifique o nome do container Postgres:
+
+```bash
+docker ps
+```
+
+2) Execute uma query para ver `flyway_schema_history`:
+
+```bash
+docker exec <postgres_container> \
+	psql -U <db_user> -d <db_name> -c "SELECT installed_rank, version, description, script, installed_by, installed_on, success FROM flyway_schema_history ORDER BY installed_rank;"
+```
+
+3) Inspecione dados da tabela afetada (ex.: `users`):
+
+```bash
+docker exec <postgres_container> \
+	psql -U <db_user> -d <db_name> -c "SELECT id, name, email, created_at FROM users ORDER BY created_at LIMIT 10;"
+```
+
+Observações importantes:
+- O flag `-baselineOnMigrate=true` permite adotar um banco existente como ponto de partida (útil ao migrar um DB que já contém objetos).
+- A aplicação não executa mais migrações internamente — o arquivo `internal/infrastructure/database/gomigrate.go` é apenas um stub informativo. Se remover o serviço `migrate`, assegure-se de que as migrações serão aplicadas por outro processo (CI, manual ou embutidas no deploy).
+- Em ambientes de produção, prefira executar migrações via pipeline controlado (CI/CD) com backups e janela de manutenção, em vez de depender apenas do `docker compose`.
+
 Desenvolvimento sem Docker (rodar a API localmente)
 -----------------
 1. Configure as variáveis de ambiente no `.env` ou no seu ambiente local.
