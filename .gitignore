@@ -1,0 +1,17 @@
+# Ignore Editor and environment files
+.vscode/
+.env
+
+# OS/temp files
+.DS_Store
+*.swp
+
+# Go build outputs
+/bin/
+/*.exe
+/*.dll
+/*.so
+/*.dylib
+
+# Docker
+docker-compose.override.yml
