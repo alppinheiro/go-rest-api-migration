@@ -10,7 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags='-s -w' -o app ./cmd/api
 
 # Runtime
 FROM alpine:3.18 AS runtime
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates curl
 RUN adduser -D -u 1000 app
 WORKDIR /app
 # Copy binary and migrations from builder

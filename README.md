@@ -1,42 +1,51 @@
-# Go REST API Pro
+# Go REST API CQRS Event Sourcing
 
 Resumo
 -----------------
-Projeto exemplo de uma API REST em Go, com foco em boas práticas de conteinerização, migrações versionadas (Flyway), logs estruturados e um fluxo de desenvolvimento que facilita executar, migrar e depurar localmente com `docker compose` e `Makefile`.
+Projeto exemplo de uma API REST em Go com CQRS, Event Sourcing e arquitetura hexagonal mínima para o agregado `User`. O fluxo de escrita persiste eventos no Postgres, publica no Kafka e a projeção atualiza o read model no Redis. O fluxo de leitura consulta apenas o Redis.
 
 Motivação
 -----------------
-- Atualizar toolchain para Go 1.25.9 para compatibilidade com dependências.
-- Substituir migrações em execução pelo binário por uma solução robusta com Flyway (execução via container) e manter o histórico em `flyway_schema_history`.
-- Tornar o contêiner de runtime mais seguro e leve (usuário não-root, etapa multi-stage).
-- Adicionar healthchecks, retry de conexão com o DB e logs estruturados (zerolog) para observabilidade.
+- Evoluir a base existente para a arquitetura descrita em `instructions.md` sem introduzir pipeline, testes de integração ou observabilidade adicional neste momento.
+- Materializar um primeiro fluxo vertical completo de comando e consulta para servir de base para os próximos aggregates.
 
 O que foi implementado
 -----------------
 - Multi-stage `Dockerfile` com builder em `golang:1.25.9` e runtime baseado em `alpine`.
-- `Makefile` com targets úteis: `deps`, `up`, `down`, `up-api`, `rebuild`, `flyway-migrate`, `flyway-info`, `flyway-history`, `flyway-clean`.
-- Migrações Flyway em `internal/infrastructure/database/migrations/` (V1..V4 aplicadas).
+- `Makefile` com targets úteis: `deps`, `up`, `down`, `up-api`, `run`, `migrate`, `flyway-info`, `flyway-history`, `flyway-clean`, `ps`, `logs`.
+- Estrutura inicial de arquitetura hexagonal em `internal/domain`, `internal/application`, `internal/infrastructure` e `internal/interfaces`.
+- Aggregate `User` com evento de domínio `user.created`.
+- Event store em Postgres com tabela `events` criada pela migration `V5__create_events_table.sql`.
+- Publisher Kafka para eventos de domínio e projector que consome `user-events` e atualiza o read model no Redis.
+- Read model `user:{id}` e índice `users:email_index` no Redis.
+- Endpoints HTTP implementados:
+	- `POST /users`
+	- `GET /users/:id`
+	- `GET /users?email=...`
+	- `GET /health`
 - Serviço `migrate` no `docker-compose.yml` que executa as migrações antes da API iniciar.
-- Retry na conexão com PostgreSQL em `internal/infrastructure/database/connection.go` (variáveis: `DB_MAX_RETRIES`, `DB_RETRY_DELAY`).
-- Stub de compatibilidade `RunMigrations` mantido para evitar que a aplicação quebre por referência removida.
+- Retry na conexão com PostgreSQL em `internal/infrastructure/database/connection.go`.
 - Logs estruturados com `zerolog` controlados por `LOG_LEVEL`.
-- Healthchecks: `pg_isready` para Postgres e endpoint HTTP `/health` para a API.
 
 Pré-requisitos
 -----------------
 - Docker (>= 20.x) e a extensão/plug-in `docker compose` (comando `docker compose`).
 - Make (opcional, facilita comandos encadeados).
-- (Opcional) `psql` para inspeção manual do banco.
+- (Opcional) `psql` e `redis-cli` para inspeção manual dos stores.
 
 Arquivos importantes
 -----------------
-- Código da API: [cmd/api/main.go](cmd/api/main.go)
-- Conexão com DB: [internal/infrastructure/database/connection.go](internal/infrastructure/database/connection.go)
+- Bootstrap da API: [cmd/api/main.go](cmd/api/main.go)
+- Aggregate `User`: [internal/domain/user/user.go](internal/domain/user/user.go)
+- Command handler: [internal/application/command/create_user.go](internal/application/command/create_user.go)
+- Query handler: [internal/application/query/get_user.go](internal/application/query/get_user.go)
+- Projector: [internal/application/projection/user_projector.go](internal/application/projection/user_projector.go)
+- Event store: [internal/infrastructure/database/event_store.go](internal/infrastructure/database/event_store.go)
+- Read model Redis: [internal/infrastructure/cache/redis/user_read_model.go](internal/infrastructure/cache/redis/user_read_model.go)
+- Rotas HTTP: [internal/interfaces/http/gin/router.go](internal/interfaces/http/gin/router.go)
 - Migrações Flyway: [internal/infrastructure/database/migrations/](internal/infrastructure/database/migrations/)
-- Makefile: [Makefile](Makefile)
 - Docker Compose: [docker-compose.yml](docker-compose.yml)
-- Dockerfile: [Dockerfile](Dockerfile)
-- Variáveis de ambiente de exemplo: [.env.example](.env.example)
+- Makefile: [Makefile](Makefile)
 
 Como usar (Local / Desenvolvimento)
 -----------------
@@ -58,15 +67,26 @@ docker compose version
 make deps
 ```
 
-4. Subir todo o stack (Postgres + Flyway migrate + API):
+4. Subir todo o stack (Postgres + Redis + Zookeeper + Kafka + Flyway migrate + API):
 
 ```bash
 make up
 ```
 
 Observações:
-- O target `make up` levanta os serviços com `-d --build` e aguarda o serviço `migrate` (Flyway) aplicar as migrações antes de iniciar a API.
-- Use `make up-api` se quiser subir somente a API (útil para desenvolvimento rápido quando o DB já está rodando).
+- O target `make up` levanta os serviços com `-d --build` e aguarda o serviço `migrate` aplicar as migrações antes de iniciar a API.
+- As portas externas são configuráveis na `.env` (`POSTGRES_PORT`, `REDIS_PORT`, `KAFKA_PORT`, `ZOOKEEPER_PORT`, `API_PORT`).
+
+Exemplo rápido do fluxo:
+
+```bash
+curl -X POST http://localhost:8081/users \
+	-H 'Content-Type: application/json' \
+	-d '{"name":"Andre Luiz","email":"andre@example.com"}'
+
+curl http://localhost:8081/users/<id-retornado>
+curl 'http://localhost:8081/users?email=andre@example.com'
+```
 
 Executando migrações manualmente (Flyway)
 -----------------
@@ -156,6 +176,8 @@ Variáveis de ambiente principais
 - `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` — conexão com Postgres.
 - `DB_MAX_RETRIES` — número máximo de tentativas de conexão (padrão configurado no código).
 - `DB_RETRY_DELAY` — tempo em ms entre tentativas.
+- `REDIS_ADDR`, `REDIS_PASSWORD` — conexão com Redis/read model.
+- `KAFKA_BROKERS`, `KAFKA_TOPIC`, `KAFKA_RETRY_DELAY` — broker, tópico e retry do event bus.
 - `LOG_LEVEL` — nível de logs (`debug`, `info`, `warn`, `error`).
 - `GIN_MODE` — modo do Gin (`release` em runtime Dockerfile por padrão).
 
@@ -208,6 +230,22 @@ Próximos passos recomendados
 Como eu posso ajudar mais
 -----------------
 Se precisar que eu gere um arquivo de CI, scripts para criar DBs de teste, ou que eu aplique essas mudanças direto no repositório, diga qual tarefa prefere que eu faça a seguir.
+
+## Development & Debugging
+
+- **Docker / Compose**: the project uses a named network `app_net` and persistent volumes for core services (`postgres_data`, `redis_data`, `kafka_data`, `zookeeper_data`). Postgres is mounted at `/var/lib/postgresql` (required for Postgres 18+ images).
+
+- **Makefile shortcuts**:
+	- `make clean` — remove containers, networks and volumes (`docker compose down -v --remove-orphans`).
+	- `make start` — start core services: `postgres`, `redis`, `zookeeper`, `kafka`, `migrate`.
+	- `make up` / `make down` — full compose up/down wrappers.
+	- `make ps`, `make logs` — inspect services and follow logs.
+
+- **Debugging (VS Code)**: a minimal launch config is available at [/.vscode/launch.json](.vscode/launch.json). Use the `Launch API (debug)` configuration to run with Delve; `dlvToolPath` is set in the config. If you prefer headless Delve, use the `Attach to Delve :2345` configuration.
+
+- **Projection / Read model**: events are written to Postgres; the read model is populated by the projector consuming `user-events` from Kafka and writing to Redis. Ensure `PROJECTION_ENABLED=true` when running the API locally to enable the projector. If Redis is empty, either enable projections (Kafka + projector) or run a reprojection tool to rebuild the read model from the `events` table.
+
+- **Repository hygiene**: `.env` and `.vscode/` are ignored by `.gitignore` — use `.env.example` as the template for local environment variables.
 
 ---
 Gerado em: 9 de abril de 2026
