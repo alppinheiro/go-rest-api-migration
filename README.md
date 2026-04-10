@@ -249,3 +249,4 @@ Se precisar que eu gere um arquivo de CI, scripts para criar DBs de teste, ou qu
 
 ---
 Gerado em: 9 de abril de 2026
+# go-rest-api-cqrs-event-sourcing
